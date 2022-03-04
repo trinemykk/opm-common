@@ -1056,6 +1056,7 @@ set( keywords
      001_Eclipse300/D/DZV
      001_Eclipse300/G/GASVISCT
      001_Eclipse300/G/GCONPROD
+     001_Eclipse300/H/H2STORE
      001_Eclipse300/H/HEATCR
      001_Eclipse300/H/HEATCRT
      001_Eclipse300/L/LIVEOIL

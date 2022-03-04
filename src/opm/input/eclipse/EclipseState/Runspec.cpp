@@ -26,6 +26,7 @@
 #include <opm/input/eclipse/Parser/ParserKeywords/C.hpp>
 #include <opm/input/eclipse/Parser/ParserKeywords/F.hpp>
 #include <opm/input/eclipse/Parser/ParserKeywords/G.hpp>
+#include <opm/input/eclipse/Parser/ParserKeywords/H.hpp>
 #include <opm/input/eclipse/Parser/ParserKeywords/M.hpp>
 #include <opm/input/eclipse/Parser/ParserKeywords/N.hpp>
 #include <opm/input/eclipse/Parser/ParserKeywords/O.hpp>
@@ -583,6 +584,7 @@ Runspec::Runspec( const Deck& deck )
     , m_nupcol( )
     , m_tracers( deck )
     , m_co2storage (false)
+    , m_h2storage (false)
     , m_micp (false)
 {
     if (DeckSection::hasRUNSPEC(deck)) {
@@ -608,6 +610,13 @@ Runspec::Runspec( const Deck& deck )
                 runspecSection.hasKeyword<ParserKeywords::CO2STOR>()) {
             m_co2storage = true;
             std::string msg = "The CO2 storage option is given. PVT properties from the Brine-CO2 system is used \n"
+                              "See the OPM manual for details on the used models.";
+            OpmLog::note(msg);
+        }
+
+        if (runspecSection.hasKeyword<ParserKeywords::H2STORE>()) {
+            m_h2storage = true;
+            std::string msg = "The H2 storage option is given. PVT properties from the Brine-H2 system is used \n"
                               "See the OPM manual for details on the used models.";
             OpmLog::note(msg);
         }
@@ -638,6 +647,7 @@ Runspec Runspec::serializeObject()
     result.m_sfuncctrl = SatFuncControls::serializeObject();
     result.m_nupcol = Nupcol::serializeObject();
     result.m_co2storage = true;
+    result.m_h2storage = true;
     result.m_micp = true;
 
     return result;
@@ -703,6 +713,11 @@ bool Runspec::co2Storage() const noexcept
     return this->m_co2storage;
 }
 
+bool Runspec::h2Storage() const noexcept
+{
+    return this->m_h2storage;
+}
+
 bool Runspec::micp() const noexcept
 {
     return this->m_micp;
@@ -745,6 +760,7 @@ bool Runspec::rst_cmp(const Runspec& full_spec, const Runspec& rst_spec) {
         full_spec.saturationFunctionControls() == rst_spec.saturationFunctionControls() &&
         full_spec.m_nupcol == rst_spec.m_nupcol &&
         full_spec.m_co2storage == rst_spec.m_co2storage &&
+        full_spec.m_h2storage == rst_spec.m_h2storage &&
         full_spec.m_micp == rst_spec.m_micp &&
         Welldims::rst_cmp(full_spec.wellDimensions(), rst_spec.wellDimensions());
 }
@@ -762,6 +778,7 @@ bool Runspec::operator==(const Runspec& data) const {
            this->saturationFunctionControls() == data.saturationFunctionControls() &&
            this->m_nupcol == data.m_nupcol &&
            this->m_co2storage == data.m_co2storage &&
+           this->m_h2storage == data.m_h2storage &&
            this->m_micp == data.m_micp;
 }
 
