@@ -47,7 +47,8 @@ namespace Opm
         static OilVaporizationProperties serializationTestObject();
 
         static void updateDRSDT(Opm::OilVaporizationProperties& ovp, const std::vector<double>& maxDRSDT, const std::vector<std::string>& option);
-        static void updateDRSDTCON(Opm::OilVaporizationProperties& ovp, const std::vector<double>& maxDRSDT, const std::vector<std::string>& option);
+        static void updateDRSDTCON(Opm::OilVaporizationProperties& ovp, const std::vector<double>& maxDRSDT, const std::vector<std::string>& option,
+                                   const std::vector<double>& smo, const std::vector<double>& alpha);
         static void updateDRVDT(Opm::OilVaporizationProperties& ovp, const std::vector<double>& maxDRVDT);
         static void updateVAPPARS(Opm::OilVaporizationProperties& ovp, double vap1, double vap2);
 
@@ -64,6 +65,8 @@ namespace Opm
         double vap1() const;
         double vap2() const;
 
+        double getSmo(const size_t pvtRegionIdx) const;
+        double getAlpha(const size_t pvtRegionIdx) const;
         /*
          * if either argument was default constructed == will always be false
          * and != will always be true
@@ -80,6 +83,8 @@ namespace Opm
             serializer(m_maxDRSDT);
             serializer(m_maxDRSDT_allCells);
             serializer(m_maxDRVDT);
+            serializer(m_smo);
+            serializer(m_alpha);
         }
 
     private:
@@ -89,6 +94,8 @@ namespace Opm
         std::vector<double> m_maxDRSDT;
         std::vector<bool> m_maxDRSDT_allCells;
         std::vector<double> m_maxDRVDT;
+        std::vector<double> m_smo;
+        std::vector<double> m_alpha;
     };
 }
 #endif // DRSDT_H

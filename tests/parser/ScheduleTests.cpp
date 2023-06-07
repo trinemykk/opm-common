@@ -1575,7 +1575,12 @@ BOOST_AUTO_TEST_CASE(createDeckWithDRSDTCON) {
             " 10  OKT 2008 / \n"
             "/\n"
             "DRSDTCON\n"
-            "0.01\n"
+            "/\n"
+            "DATES             -- 2\n"
+            " 15  OKT 2008 / \n"
+            "/\n"
+            "DRSDTCON\n"
+            "0.01 0.3 1e-7\n"
             "/\n";
 
     const auto& schedule = make_schedule(input);
@@ -1588,6 +1593,15 @@ BOOST_AUTO_TEST_CASE(createDeckWithDRSDTCON) {
     BOOST_CHECK_EQUAL(true,   ovap.drsdtActive());
     BOOST_CHECK_EQUAL(false,   ovap.drvdtActive());
     BOOST_CHECK_EQUAL(true,   ovap.drsdtConvective());
+    BOOST_CHECK_CLOSE(ovap.getMaxDRSDT(0), 0.04, 1e-9);
+    BOOST_CHECK_CLOSE(ovap.getAlpha(0), 3e-9, 1e-9);
+    BOOST_CHECK_CLOSE(ovap.getSmo(0), 0.34, 1e-9);
+
+    const auto& ovap2 = schedule[2].oilvap();
+    BOOST_CHECK_CLOSE(ovap2.getMaxDRSDT(0), 0.01, 1e-9);
+    BOOST_CHECK_CLOSE(ovap2.getAlpha(0), 1e-7, 1e-9);
+    BOOST_CHECK_CLOSE(ovap2.getSmo(0), 0.3, 1e-9);
+
 }
 
 BOOST_AUTO_TEST_CASE(createDeckWithDRSDTR) {

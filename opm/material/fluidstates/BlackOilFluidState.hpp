@@ -214,6 +214,7 @@ public:
             setSaturation(phaseIdx, fs.saturation(phaseIdx));
             setPressure(phaseIdx, fs.pressure(phaseIdx));
             setDensity(phaseIdx, fs.density(phaseIdx));
+            setViscosity(phaseIdx, fs.viscosity(phaseIdx));
 
             if constexpr (enableEnergy)
                 setEnthalpy(phaseIdx, fs.enthalpy(phaseIdx));
@@ -340,6 +341,20 @@ public:
     { *saltSaturation_ = newSaltSaturation; }
 
     /*!
+     * \ brief Set the inverse formation volume factor of a fluid phase
+     */
+    void setViscosity(unsigned phaseIdx, const Scalar& visc)
+    { viscosity_[canonicalToStoragePhaseIndex_(phaseIdx)] = visc; }
+
+
+    /*!
+     * \ brief Set the inverse formation volume factor of a fluid phase
+     */
+    void setRsSat(const Scalar& rssat)
+    { RsSat_ = rssat; }
+
+
+    /*!
      * \brief Return the pressure of a fluid phase [Pa]
      */
     const Scalar& pressure(unsigned phaseIdx) const
@@ -402,6 +417,10 @@ public:
             static Scalar null = 0.0;
             return null;
         }
+    }
+    const Scalar& RsSat() const
+    {
+        return RsSat_;
     }
 
     /*!
@@ -544,7 +563,10 @@ public:
      * \brief Return the dynamic viscosity of a fluid phase [Pa s].
      */
     Scalar viscosity(unsigned phaseIdx) const
-    { return FluidSystem::viscosity(*this, phaseIdx, pvtRegionIdx_); }
+    //{ 
+    //    std::cout << "use " << phaseIdx << " " << viscosity_[canonicalToStoragePhaseIndex_(phaseIdx)] << std::endl;
+    //    return FluidSystem::viscosity(*this, phaseIdx, pvtRegionIdx_); }
+    { return viscosity_[canonicalToStoragePhaseIndex_(phaseIdx)];}
 
     /*!
      * \brief Return the mass fraction of a component in a fluid phase [-].
@@ -689,6 +711,9 @@ private:
     ConditionalStorage<enableDissolutionInWater,Scalar> Rsw_;
     ConditionalStorage<enableBrine, Scalar> saltConcentration_;
     ConditionalStorage<enableSaltPrecipitation, Scalar> saltSaturation_;
+    std::array<Scalar, numStoragePhases> viscosity_;
+    Scalar RsSat_;
+
     unsigned short pvtRegionIdx_;
 };
 

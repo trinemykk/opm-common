@@ -8,7 +8,20 @@
     {
       "name": "DRSDT_MAX",
       "value_type": "DOUBLE",
-      "dimension": "1"
+      "dimension": "1",
+      "default": 0.04
+    },
+    {
+      "name": "SMO",
+      "value_type": "DOUBLE",
+      "dimension": "1",
+      "default": 0.34
+    },
+    {
+      "name": "ALPHA",
+      "value_type": "DOUBLE",
+      "dimension": "1",
+      "default": 3e-9
     },
     {
       "name": "OPTION",

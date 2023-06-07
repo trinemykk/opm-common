@@ -346,13 +346,19 @@ File {} line {}.)", wname, location.keyword, location.filename, location.lineno)
         std::size_t numPvtRegions = this->m_static.m_runspec.tabdims().getNumPVTTables();
         std::vector<double> maximums(numPvtRegions);
         std::vector<std::string> options(numPvtRegions);
+        std::vector<double> smos(numPvtRegions);
+        std::vector<double> alphas(numPvtRegions);
         for (const auto& record : handlerContext.keyword) {
             const auto& max = record.getItem<ParserKeywords::DRSDTCON::DRSDT_MAX>().getSIDouble(0);
+            const auto& alpha = record.getItem<ParserKeywords::DRSDTCON::ALPHA>().getSIDouble(0);
+            const auto& smo = record.getItem<ParserKeywords::DRSDTCON::SMO>().getSIDouble(0);
             const auto& option = record.getItem<ParserKeywords::DRSDTCON::OPTION>().get< std::string >(0);
             std::fill(maximums.begin(), maximums.end(), max);
             std::fill(options.begin(), options.end(), option);
+            std::fill(smos.begin(), smos.end(), smo);
+            std::fill(alphas.begin(), alphas.end(), alpha);
             auto& ovp = this->snapshots.back().oilvap();
-            OilVaporizationProperties::updateDRSDTCON(ovp, maximums, options);
+            OilVaporizationProperties::updateDRSDTCON(ovp, maximums, options, smos, alphas);
         }
     }
 
