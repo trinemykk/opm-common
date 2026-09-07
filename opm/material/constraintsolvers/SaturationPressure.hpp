@@ -46,12 +46,20 @@ namespace Opm {
  * The bubble-point (dew-point) pressure of a liquid (vapour) with composition
  * \c z is the pressure where the incipient vapour (liquid) phase appears.  The
  * equilibrium ratios K are obtained by successive substitution on the fugacity
- * coefficient ratios at fixed pressure, and the pressure is updated to drive
- * the total amount of the incipient phase, sum_c K_c z_c (or sum_c z_c / K_c),
- * towards one.  The outer iteration scans a pressure branch from its nominal
- * single-phase side.  A converged trivial solution K == 1 advances the scan and
- * restarts the substitution from the Wilson estimate; other trials update the
- * pressure from the amount of the incipient phase.
+ * coefficient ratios at fixed pressure, accelerated by dominant-eigenvalue
+ * extrapolation where the substitution contracts slowly, and the pressure is
+ * updated to drive the total amount of the incipient phase, sum_c K_c z_c (or
+ * sum_c z_c / K_c), towards one.  The outer iteration scans a pressure branch
+ * from its nominal single-phase side.  A converged trivial solution K == 1
+ * advances the scan and restarts the substitution from the Wilson estimate.
+ * A converged non-trivial trial is classified by its incipient amount -- above
+ * one the pressure lies inside the two-phase region, below one outside it --
+ * and the search steps by a secant on the logarithms until those two sides
+ * bracket the root, then by regula falsi within the bracket.  A candidate root
+ * is accepted only after a tangent-plane stability test of the known phase in
+ * the direction the search does not probe, which refuses stationary points
+ * where the incipient phase merely occupies the other EOS root of an almost
+ * identical composition inside the two-phase region.
  *
  * A mixture may have lower and upper dew points at a given temperature.  The
  * upper (retrograde) one is the boundary crossed when reservoir pressure
@@ -135,6 +143,101 @@ private:
         return Kp;
     }
 
+    /// Whether the known phase \p z is unstable at the pressure and
+    /// temperature held in \p fs, judged by a tangent-plane trial in the
+    /// direction the saturation search does not probe: a phase of the same
+    /// kind as \p z, started from the Wilson estimate, evaluated at the same
+    /// EOS root.  A trial that converges to a stationary point with a total
+    /// amount above one lies below the tangent plane, so \p z is not at a
+    /// saturation point but inside the two-phase region.  A trial that does
+    /// not converge cannot certify the phase and reports it unstable, so
+    /// that no uncertified root is returned.
+    static bool knownPhaseUnstable_(const CompositionalFluidState<Scalar, FluidSystem>& fs,
+                                    const CompVec& z,
+                                    const unsigned knownPhaseIdx,
+                                    const CompVec& wilsonK,
+                                    const bool knownIsLiquid,
+                                    const EOSType eosType)
+    {
+        // The known phase keeps its own state; the trial takes its root type
+        // through the same phase index in a second state.
+        typename FluidSystem::template ParameterCache<Scalar> knownCache(eosType);
+        knownCache.updatePhase(fs, knownPhaseIdx);
+        CompVec lnPhiZ;
+        for (int c = 0; c < numComponents; ++c) {
+            lnPhiZ[c] = std::log(FluidSystem::fugacityCoefficient(fs, knownCache, knownPhaseIdx, c));
+        }
+
+        // A liquid is tested against a heavier liquid, a vapour against a
+        // lighter vapour: the direction the incipient-phase search leaves out.
+        CompVec Y;
+        for (int c = 0; c < numComponents; ++c) {
+            Y[c] = knownIsLiquid ? z[c] / wilsonK[c] : z[c] * wilsonK[c];
+        }
+
+        auto trial = fs;
+        // Dominant-eigenvalue extrapolation, as in the saturation search.
+        CompVec dPrev{};
+        bool haveDPrev = false;
+        constexpr int maxIter = 500;
+        for (int iter = 0; iter < maxIter; ++iter) {
+            Scalar sumY = 0.0;
+            for (int c = 0; c < numComponents; ++c) {
+                sumY += Y[c];
+            }
+            for (int c = 0; c < numComponents; ++c) {
+                trial.setMoleFraction(knownPhaseIdx, c, Y[c] / sumY);
+            }
+            typename FluidSystem::template ParameterCache<Scalar> trialCache(eosType);
+            trialCache.updatePhase(trial, knownPhaseIdx);
+
+            Scalar change = 0.0;
+            Scalar sumNew = 0.0;
+            CompVec d{};
+            for (int c = 0; c < numComponents; ++c) {
+                if (z[c] <= 0.0) {
+                    Y[c] = 0.0;
+                    continue;
+                }
+                const Scalar lnPhiY =
+                    std::log(FluidSystem::fugacityCoefficient(trial, trialCache, knownPhaseIdx, c));
+                const Scalar Ynew = std::exp(std::log(z[c]) + lnPhiZ[c] - lnPhiY);
+                change = std::max(change, std::abs(Ynew - Y[c]) / std::max(Scalar{1}, Ynew));
+                d[c] = std::log(Ynew) - std::log(Y[c]);
+                Y[c] = Ynew;
+                sumNew += Ynew;
+            }
+            if (change < 1.0e-10) {
+                // At a saturation point the trial collapses back onto the
+                // known phase and the total is one to rounding; inside the
+                // envelope the excess is orders of magnitude larger.
+                return sumNew > 1.0 + 1.0e-8;
+            }
+            if (haveDPrev && (iter % 4 == 3)) {
+                Scalar num = 0.0;
+                Scalar den = 0.0;
+                for (int c = 0; c < numComponents; ++c) {
+                    num += d[c] * dPrev[c];
+                    den += dPrev[c] * dPrev[c];
+                }
+                if (den > 0.0) {
+                    const Scalar ratio = std::min(num / den, Scalar{0.98});
+                    if (ratio > 0.0) {
+                        const Scalar remaining = ratio / (1.0 - ratio);
+                        for (int c = 0; c < numComponents; ++c) {
+                            if (z[c] > 0.0) {
+                                Y[c] *= std::exp(remaining * d[c]);
+                            }
+                        }
+                    }
+                }
+            }
+            dPrev = d;
+            haveDPrev = true;
+        }
+        return true;
+    }
+
     static Outcome solve_(const CompVec& z,
                           const Scalar temp,
                           const EOSType eosType,
@@ -184,18 +287,35 @@ private:
             fs.setMoleFraction(knownPhaseIdx, c, z[c]);
         }
 
-        // pSingle records a converged trivial-root trial; pTwo records a
-        // converged trial with distinct EOS volumes. Once both are present,
-        // use their geometric mean to limit later pressure updates.
-        Scalar pSingle{}, pTwo{};
-        bool haveSingle = false;
-        bool haveTwo = false;
+        // Bracket of the saturation pressure in the scan direction.  pOut is
+        // a pressure known to lie on the starting (single-phase) side of the
+        // root: a trial that collapsed onto the trivial solution, or a
+        // converged trial whose incipient amount fell short of one.  pIn is a
+        // pressure known to lie inside the two-phase region: a converged trial
+        // whose incipient amount exceeded one, which is the tangent-plane
+        // instability condition at that stationary point.  Distinct EOS roots
+        // alone do not tell which side of the boundary a trial is on.
+        Scalar pOut{}, pIn{};
+        bool haveOut = false;
+        bool haveIn = false;
+        // ln(sum) at the bracket ends.  A trivial trial fixes the side but
+        // supplies no value, so fOut is only known after a converged one.
+        Scalar fOut{}, fIn{};
+        bool haveFOut = false;
+        bool haveFIn = false;
+        // The previous converged non-trivial trial, for the secant step, and
+        // which bracket end the previous step replaced (Illinois damping).
+        Scalar lnpPrev{}, fPrev{};
+        bool havePrev = false;
+        int lastSide = 0;
+        // Whether any converged trial other than the trivial solution was met.
+        bool sawNonTrivial = false;
 
         // Use a 10% step while scanning a branch. A smaller step reduces the
         // chance of crossing a narrow phase envelope in one update.
         constexpr Scalar scanStep = 0.9;
         constexpr int maxOuter = 200;
-        constexpr int maxInner = 100;
+        constexpr int maxInner = 500;
 
         for (int outer = 0; outer < maxOuter; ++outer) {
             fs.setPressure(oilPhaseIdx, p);
@@ -205,6 +325,10 @@ private:
             bool trivial = false;
             bool rootsDistinct = false;
             bool substitutionConverged = false;
+            // The previous change of ln K, for the dominant-eigenvalue
+            // extrapolation below.
+            CompVec dPrev{};
+            bool haveDPrev = false;
             for (int inner = 0; inner < maxInner; ++inner) {
                 Scalar sum = 0.0;
                 for (int c = 0; c < numComponents; ++c) {
@@ -234,6 +358,7 @@ private:
 
                 Scalar change = 0.0;
                 trivial = true;
+                CompVec d;
                 for (int c = 0; c < numComponents; ++c) {
                     const Scalar phiL = FluidSystem::fugacityCoefficient(
                         fs, paramCache, oilPhaseIdx, c);
@@ -245,12 +370,41 @@ private:
                     change = std::max(change, std::abs(newK - K[c]) /
                                               std::max(Scalar{1}, std::abs(newK)));
                     trivial = trivial && (std::abs(newK - 1.0) < 1.0e-5);
+                    d[c] = std::log(newK) - std::log(K[c]);
                     K[c] = newK;
                 }
                 if (change < 1.0e-12) {
                     substitutionConverged = true;
                     break;
                 }
+
+                // Successive substitution contracts ln K geometrically, with a
+                // ratio that approaches one near a critical point, where it
+                // needs hundreds of passes.  Every fourth pass, estimate that
+                // ratio from the last two changes and extrapolate the
+                // remaining geometric series in one jump.  Extrapolation is
+                // withheld when the changes are not aligned, and capped so
+                // that a ratio near one cannot throw K across the envelope.
+                if (haveDPrev && (inner % 4 == 3)) {
+                    Scalar num = 0.0;
+                    Scalar den = 0.0;
+                    for (int c = 0; c < numComponents; ++c) {
+                        num += d[c] * dPrev[c];
+                        den += dPrev[c] * dPrev[c];
+                    }
+                    if (den > 0.0) {
+                        constexpr Scalar maxRatio = 0.98;
+                        const Scalar ratio = std::min(num / den, maxRatio);
+                        if (ratio > 0.0) {
+                            const Scalar remaining = ratio / (1.0 - ratio);
+                            for (int c = 0; c < numComponents; ++c) {
+                                K[c] *= std::exp(remaining * d[c]);
+                            }
+                        }
+                    }
+                }
+                dPrev = d;
+                haveDPrev = true;
             }
 
             // The trivial test needs a converged K just as the pressure
@@ -258,16 +412,26 @@ private:
             // is 1e-12, so an exhausted iteration can read as near-trivial
             // while K is still moving, and would then record an endpoint from
             // a pressure it never classified.
-            if (substitutionConverged && trivial && !rootsDistinct) {
-                // The phases collapsed onto one root. Record the trial as the
-                // scan's nominal single-phase endpoint. If a distinct-root
-                // trial is also available, use their geometric mean;
-                // otherwise continue the branch scan.
-                pSingle = p;
-                haveSingle = true;
-                p = haveTwo ? std::sqrt(pSingle * pTwo)
-                            : p * (fromAbove ? scanStep : Scalar{1} / scanStep);
+            const auto markOutside = [&](const bool withValue, const Scalar value) {
+                pOut = p;
+                haveOut = true;
+                haveFOut = withValue;
+                fOut = value;
+            };
+            // Step from a trial the substitution could not classify: bisect
+            // the bracket if there is one, otherwise continue the scan.
+            const auto stepUnclassified = [&]() {
+                p = haveIn ? std::sqrt(pOut * pIn)
+                           : p * (fromAbove ? scanStep : Scalar{1} / scanStep);
                 K = wilsonK(p);
+            };
+
+            if (substitutionConverged && trivial && !rootsDistinct) {
+                // The phases collapsed onto one root: the pressure lies on
+                // the single-phase side of the boundary.
+                markOutside(false, Scalar{0});
+                lastSide = 0;
+                stepUnclassified();
                 continue;
             }
 
@@ -290,49 +454,138 @@ private:
                 // condition at an arbitrary pressure.  Treat it as the
                 // non-solution and keep searching. Mixtures where the roots
                 // have merged are refused for the same reason.
-                if (distance > 1.0e-3 || rootsDistinct) {
+                //
+                // Distinct roots also admit a stationary point where the
+                // incipient phase merely occupies the other EOS root of an
+                // almost identical composition inside the two-phase region.
+                // Certify a candidate by the stability of the known phase:
+                // at a saturation point it is marginally stable, inside the
+                // envelope a trial phase of its own kind lies below its
+                // tangent plane.
+                if ((distance > 1.0e-3 || rootsDistinct) &&
+                    !knownPhaseUnstable_(fs, z, knownPhaseIdx, wilsonK(p), bubble, eosType))
+                {
                     press = p;
                     return Outcome::Converged;
                 }
-                pSingle = p;
-                haveSingle = true;
-                p = haveTwo ? std::sqrt(pSingle * pTwo)
-                            : p * (fromAbove ? scanStep : Scalar{1} / scanStep);
-                K = wilsonK(p);
+                // A refuted candidate is a stationary point that is not a
+                // saturation point, like the disguised trivial solution.
+                // It is recorded as a scan endpoint rather than a bracket
+                // end: the bracket then collapses onto it and the branch
+                // reports no root.
+                markOutside(false, Scalar{0});
+                lastSide = 0;
+                stepUnclassified();
                 continue;
             }
 
-            // Retain converged substitutions with distinct EOS volumes as the
-            // candidate endpoint used to limit later updates. Distinct roots
-            // alone do not test thermodynamic stability.
-            if (substitutionConverged && rootsDistinct) {
-                pTwo = p;
-                haveTwo = true;
+            // The incipient amount is the residual of the search: ln(sum) is
+            // positive inside the two-phase region and negative outside it,
+            // and the root is where it vanishes.
+            const Scalar f = std::log(sum);
+            const Scalar lnp = std::log(p);
+
+            if (!substitutionConverged) {
+                // An exhausted substitution classifies nothing.  Take the
+                // fixed-point step K ~ 1/p implies, p * sum towards the root,
+                // and let the carried-over K keep converging.
+                const Scalar lnpFixed = lnp + (fromAbove ? f : -f);
+                p = std::exp(std::clamp(lnpFixed - lnp, std::log(Scalar{0.5}), std::log(Scalar{2})) + lnp);
+                if (haveOut && ((fromAbove && p >= pOut) || (!fromAbove && p <= pOut))) {
+                    p = std::sqrt(std::exp(lnp) * pOut);
+                }
+                continue;
             }
-            // Advance towards unit incipient amount: up on the bubble and
-            // upper-dew branches, down on the lower-dew branch.
-            const Scalar factor = (mode == Mode::DewLower) ? 1.0 / sum : sum;
-            Scalar pNext = p * std::clamp(factor, Scalar{0.5}, Scalar{2.0});
-            // Do not step past the recorded trivial-root endpoint; use the
-            // geometric mean instead.
-            if (haveSingle && ((fromAbove && pNext >= pSingle) ||
-                               (!fromAbove && pNext <= pSingle)))
+
+            sawNonTrivial = true;
+            if (f > 0) {
+                // Inside the two-phase region.  Illinois: replacing the same
+                // end twice in a row halves the value kept at the other end,
+                // so regula falsi cannot stall against it.
+                if (haveIn && lastSide > 0 && haveFOut) {
+                    fOut *= 0.5;
+                }
+                pIn = p;
+                fIn = f;
+                haveIn = true;
+                haveFIn = true;
+                lastSide = 1;
+            }
+            else {
+                if (haveOut && haveFOut && lastSide < 0 && haveIn && haveFIn) {
+                    fIn *= 0.5;
+                }
+                markOutside(true, f);
+                lastSide = -1;
+            }
+
+            // Propose the next pressure in ln p.  Regula falsi within a bracket
+            // whose ends both carry a value; a secant through the previous
+            // trial before the bracket closes, provided the slope has the sign
+            // the branch implies (sum grows towards the root: falling pressure
+            // from above, rising pressure from below); and the fixed-point
+            // step otherwise.
+            Scalar lnpNext{};
+            bool proposed = false;
+            if (haveIn && haveOut && haveFIn && haveFOut) {
+                const Scalar lnpIn = std::log(pIn);
+                const Scalar lnpOut = std::log(pOut);
+                if (fIn != fOut) {
+                    lnpNext = lnpOut - fOut * (lnpIn - lnpOut) / (fIn - fOut);
+                    proposed = true;
+                }
+            }
+            if (!proposed && havePrev && lnp != lnpPrev) {
+                const Scalar slope = (f - fPrev) / (lnp - lnpPrev);
+                const bool slopeOk = fromAbove ? (slope < -1.0e-12) : (slope > 1.0e-12);
+                if (slopeOk) {
+                    lnpNext = lnp - f / slope;
+                    proposed = true;
+                }
+            }
+            if (!proposed) {
+                lnpNext = lnp + (fromAbove ? f : -f);
+            }
+            lnpPrev = lnp;
+            fPrev = f;
+            havePrev = true;
+
+            // Keep every step within a factor of two of the current pressure,
+            // so that a mixture with both dew points is not carried across the
+            // whole envelope in one update, and keep it inside the bracket.
+            lnpNext = lnp + std::clamp(lnpNext - lnp, std::log(Scalar{0.5}), std::log(Scalar{2}));
+            Scalar pNext = std::exp(lnpNext);
+            if (haveIn && haveOut) {
+                const Scalar lo = std::min(pIn, pOut);
+                const Scalar hi = std::max(pIn, pOut);
+                if (!(pNext > lo && pNext < hi)) {
+                    pNext = std::sqrt(lo * hi);
+                }
+            }
+            else if (haveOut && ((fromAbove && pNext >= pOut) ||
+                                 (!fromAbove && pNext <= pOut)))
             {
-                pNext = std::sqrt(p * pSingle);
+                pNext = std::sqrt(p * pOut);
             }
             p = pNext;
         }
 
-        // If no distinct-root endpoint was recorded, report NoRoot only when
-        // the scan encountered a converged trivial-root state. If every
-        // substitution exhausted, the branch search merely gave up.
-        if (!haveTwo) {
-            return haveSingle ? Outcome::NoRoot : Outcome::GaveUp;
+        // Nothing inside the two-phase region was met.  That says the branch
+        // has no root only if the scan classified trials as trivial and never
+        // converged to any other stationary point; a search that was homing
+        // in on a root when the iterations ran out has merely given up, and
+        // reporting no root would hand an upper-dew search to the lower
+        // branch on no evidence.
+        if (!haveIn) {
+            return (haveOut && !sawNonTrivial) ? Outcome::NoRoot : Outcome::GaveUp;
         }
-        // Treat coincident recorded endpoints without an accepted solution as
-        // no root. Distinct endpoints mean the search is unfinished.
-        if (haveSingle &&
-            (std::abs(pSingle - pTwo) <= 1.0e-6 * std::max(pSingle, pTwo)))
+        // A bracket that collapsed onto a point where only the trivial
+        // solution lives has pinned the phase boundary down without finding
+        // a saturation point there; that too is evidence of no root.  A
+        // bracket closed by a converged trial on the outside contains a sign
+        // change and so a root the search failed to reach.
+        if (haveOut && !haveFOut &&
+            (std::abs(pOut - pIn) <= 1.0e-6 * std::max(pOut, pIn)))
         {
             return Outcome::NoRoot;
         }

@@ -251,28 +251,33 @@ BOOST_AUTO_TEST_CASE(BubbleDewRoundTrip)
 
 BOOST_AUTO_TEST_CASE(DewPressureLowerBranch)
 {
-    // This methane-rich case exercises the lower-branch fallback. Verify the
-    // returned low-pressure state through its equilibrium conditions rather
-    // than a pressure recorded from this implementation.
-    const CompVec vapor{0.0, 0.90, 0.10};
-    Scalar press = 0.0;
-    CompVec liquid{};
+    // A vapour leaner in methane than the critical composition of the mixture
+    // (about 0.89 at this temperature) has no retrograde dew point: above its
+    // lower dew point it is two-phase all the way up to the bubble curve.  The
+    // upper-branch search still meets stationary points on the way -- the
+    // vapour coexisting with an almost identical liquid on the other EOS root,
+    // near 155.6 bar for 0.70 and 314.0 bar for 0.85 -- and must refuse them,
+    // because the vapour is unstable at those pressures.  The answer is then
+    // the lower dew point, below one bar, verified through its equilibrium
+    // conditions rather than a pressure recorded from this implementation.
+    for (const Scalar yMethane : {Scalar{0.70}, Scalar{0.85}}) {
+        const CompVec vapor{0.0, yMethane, 1.0 - yMethane};
+        Scalar press = 0.0;
+        CompVec liquid{};
 
-    BOOST_REQUIRE(SatP::dewPressure(vapor, temperature, eosType, press, liquid));
-    // A genuinely lower-branch pressure: the retrograde region of comparable
-    // mixtures sits above 100 bar, the lower dew point of this one near 1 bar.
-    BOOST_CHECK_GT(press, 0.0);
-    BOOST_CHECK_LT(press, 50.0e5);
+        BOOST_REQUIRE_MESSAGE(SatP::dewPressure(vapor, temperature, eosType, press, liquid),
+                              "dew point must converge for y_C1 = " << yMethane);
+        BOOST_CHECK_GT(press, 0.0);
+        BOOST_CHECK_LT(press, 5.0e5);
 
-    const auto res = equilibriumResidual(vapor, FluidSystem::gasPhaseIdx,
-                                         liquid, FluidSystem::oilPhaseIdx, press);
-    BOOST_CHECK_SMALL(res.closure, 1.0e-10);
-    BOOST_CHECK_SMALL(res.fugacity, 1.0e-6);
-
-    // The incipient liquid must be a genuinely different phase, and being the
-    // lower branch it is the heavy one: richer in decane than the vapour.
-    BOOST_CHECK_GT(res.distance, 1.0e-3);
-    BOOST_CHECK_GT(liquid[2], vapor[2]);
+        const auto res = equilibriumResidual(vapor, FluidSystem::gasPhaseIdx,
+                                             liquid, FluidSystem::oilPhaseIdx, press);
+        BOOST_CHECK_SMALL(res.closure, 1.0e-10);
+        BOOST_CHECK_SMALL(res.fugacity, 1.0e-6);
+        // The incipient liquid is nearly pure decane: a different phase.
+        BOOST_CHECK_GT(res.distance, 1.0);
+        BOOST_CHECK_GT(liquid[2], 0.99);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(SupercriticalLiquidHasNoBubblePoint)
@@ -346,4 +351,84 @@ BOOST_AUTO_TEST_CASE(TrivialSolutionIsNotReportedAsADewPoint)
             BOOST_CHECK_LT(press, 0.0);
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(NearCriticalBubblePoints)
+{
+    // Liquids approaching the critical composition of the mixture.  The
+    // successive substitution contracts ever more slowly there and the
+    // saturation sum flattens against one, which defeated a fixed-point
+    // pressure update within its iteration budget.  The reference values are
+    // this implementation's converged results, cross-checked against a scan
+    // of the saturation sum over pressure at fixed composition.
+    const std::array<std::pair<Scalar, Scalar>, 3> cases{{
+        {Scalar{0.80}, 306.1289597e5},
+        {Scalar{0.82}, 314.7255712e5},
+        {Scalar{0.834}, 320.0963847e5},
+    }};
+    for (const auto& [xMethane, pExpected] : cases) {
+        const CompVec liquid{0.0, xMethane, 1.0 - xMethane};
+        Scalar press = 0.0;
+        CompVec vapor{};
+
+        BOOST_REQUIRE_MESSAGE(SatP::bubblePressure(liquid, temperature, eosType, press, vapor),
+                              "bubble point must converge for x_C1 = " << xMethane);
+        BOOST_CHECK_CLOSE(press, pExpected, 1.0e-4);
+
+        const auto res = equilibriumResidual(liquid, FluidSystem::oilPhaseIdx,
+                                             vapor, FluidSystem::gasPhaseIdx, press);
+        BOOST_CHECK_SMALL(res.closure, 1.0e-10);
+        BOOST_CHECK_SMALL(res.fugacity, 1.0e-8);
+        BOOST_CHECK_GT(res.distance, 1.0e-2);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(RetrogradeDewPointOfBubblePointVapour)
+{
+    // The vapour in equilibrium with a decane-rich liquid at its bubble point
+    // is a lean gas with two dew points: the lower one at the bubble pressure
+    // it came from, and a retrograde one above it.  dewPressure() must report
+    // the retrograde point.  It is approached from the single-phase side,
+    // where the saturation sum rises towards one so slowly that a fixed-point
+    // pressure update ran out of iterations short of it.
+    const CompVec liquid{0.0, 0.17, 0.83};
+    Scalar pBubble = 0.0;
+    CompVec vapor{};
+    BOOST_REQUIRE(SatP::bubblePressure(liquid, temperature, eosType, pBubble, vapor));
+    BOOST_CHECK_CLOSE(pBubble, 44.4490922e5, 1.0e-4);
+
+    Scalar pDew = 0.0;
+    CompVec incipient{};
+    BOOST_REQUIRE(SatP::dewPressure(vapor, temperature, eosType, pDew, incipient));
+    BOOST_CHECK_CLOSE(pDew, 57.6521308e5, 1.0e-4);
+    BOOST_CHECK_GT(pDew, pBubble);
+
+    const auto res = equilibriumResidual(vapor, FluidSystem::gasPhaseIdx,
+                                         incipient, FluidSystem::oilPhaseIdx, pDew);
+    BOOST_CHECK_SMALL(res.closure, 1.0e-10);
+    BOOST_CHECK_SMALL(res.fugacity, 1.0e-8);
+    BOOST_CHECK_GT(res.distance, 1.0e-2);
+}
+
+BOOST_AUTO_TEST_CASE(NearCriticalRetrogradeDewPoint)
+{
+    // A vapour just richer in methane than the critical composition.  Its
+    // retrograde dew point lies within a bar or two of the critical pressure
+    // (the bubble curve peaks at 331.2 bar near x_C1 = 0.88), where the two
+    // phases differ in composition by a few percent only.  The point is
+    // accepted once the stability certificate converges, which the
+    // accelerated substitution makes possible this close to the critical
+    // point.
+    const CompVec vapor{0.0, 0.90, 0.10};
+    Scalar press = 0.0;
+    CompVec liquid{};
+    BOOST_REQUIRE(SatP::dewPressure(vapor, temperature, eosType, press, liquid));
+    BOOST_CHECK_GT(press, 300.0e5);
+    BOOST_CHECK_LT(press, 340.0e5);
+
+    const auto res = equilibriumResidual(vapor, FluidSystem::gasPhaseIdx,
+                                         liquid, FluidSystem::oilPhaseIdx, press);
+    BOOST_CHECK_SMALL(res.closure, 1.0e-10);
+    BOOST_CHECK_SMALL(res.fugacity, 1.0e-8);
+    BOOST_CHECK_GT(res.distance, 1.0e-2);
 }
